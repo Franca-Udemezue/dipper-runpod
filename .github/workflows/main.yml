@@ -27,6 +27,7 @@ jobs:
     - name: Build and push Docker image
       uses: docker/build-push-action@v6
       with:
-        context: .
+        # Changing this to defaultContext maps the checked-out folder structure exactly
+        context: "{{defaultContext}}"
         push: true
         tags: ${{ secrets.DOCKER_USERNAME }}/dipper-runpod:latest
