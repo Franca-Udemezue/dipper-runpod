@@ -27,7 +27,8 @@ jobs:
     - name: Build and push Docker image
       uses: docker/build-push-action@v6
       with:
-        # Changing this to defaultContext maps the checked-out folder structure exactly
-        context: "{{defaultContext}}"
+        # Forcibly points the builder to the local folder where files sit
+        context: ${{ github.workspace }}
+        file: ${{ github.workspace }}/Dockerfile
         push: true
         tags: ${{ secrets.DOCKER_USERNAME }}/dipper-runpod:latest
