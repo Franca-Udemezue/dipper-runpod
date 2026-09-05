@@ -1,89 +1,65 @@
-import os
-
-# ─── MUST BE SET BEFORE ANY IMPORTS ──────────────────────────────────
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-# ─────────────────────────────────────────────────────────────────────
-
 import runpod
 import torch
 from transformers import T5Tokenizer, T5ForConditionalGeneration
 
-# ─── MODEL CONFIGURATION ─────────────────────────────────────────────
-MODEL_ID = "kalpeshk2011/dipper-paraphraser-xxl"
+# Global variables to cache model elements on startup
+tokenizer = None
+model = None
 
-# ─── LOAD MODEL ONCE AT STARTUP ──────────────────────────────────────
-print("Loading Dipper tokenizer...")
-tokenizer = T5Tokenizer.from_pretrained(MODEL_ID)
+def load_model():
+    global tokenizer, model
+    if model is None:
+        print("Loading DIPPER model into VRAM...")
+        # DIPPER requires google/t5-v1_1-xxl tokenizer config baseline
+        tokenizer = T5Tokenizer.from_pretrained('google/t5-v1_1-xxl')
+        model = T5ForConditionalGeneration.from_pretrained('kalpeshk2011/dipper-paraphraser-xxl')
+        
+        if torch.cuda.is_available():
+            model = model.cuda()
+        model.eval()
+        print("Model loaded successfully.")
 
-print("Loading Dipper model...")
-model = T5ForConditionalGeneration.from_pretrained(MODEL_ID)
-model.cuda()
-model.eval()
-print("Dipper model loaded successfully.")
-
-
-# ─── PARAPHRASE FUNCTION ─────────────────────────────────────────────
-def paraphrase(text, lex_diversity=60, order_diversity=40, max_length=512):
+def handler(job):
     """
-    Paraphrase input text using Dipper.
-
-    Args:
-        text: The text to paraphrase.
-        lex_diversity: Lexical diversity (0, 20, 40, 60, 80, 100). Higher = more diverse.
-        order_diversity: Order diversity (0, 20, 40, 60, 80, 100). Higher = more reordering.
-        max_length: Maximum output length in tokens.
-
-    Returns:
-        Paraphrased text.
+    Expects JSON input structure:
+    {
+        "input": {
+            "text": "Your text here",
+            "lex": 20, 
+            "order": 20,
+            "max_tokens": 512
+        }
+    }
     """
-    # Dipper expects text wrapped with <sent> tags
-    input_text = f"<sent>{text}</sent>"
-
-    # Tokenize and move to GPU
-    input_ids = tokenizer.encode(input_text, return_tensors="pt").cuda()
-
-    # Generate paraphrase
-    with torch.no_grad():
-        outputs = model.generate(
-            input_ids,
-            max_length=max_length,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.95,
-            repetition_penalty=1.1,
-        )
-
-    # Decode and return
-    return tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-
-# ─── RUNPOD SERVERLESS HANDLER ──────────────────────────────────────
-def handler(event):
-    """RunPod serverless entry point."""
-    # Extract input
-    input_data = event.get("input", {})
-    text = input_data.get("text")
+    job_input = job.get("input", {})
+    text = job_input.get("text")
+    
     if not text:
-        return {"error": "No text provided"}
+        return {"error": "No text provided in the input payload."}
+        
+    # Default parameters based on the official DIPPER configurations
+    lex_diversity = job_input.get("lex", 20)
+    order_diversity = job_input.get("order", 20)
+    max_tokens = job_input.get("max_tokens", 512)
+    
+    # Format requirements for context-aware DIPPER format mapping
+    prompt = f"lexical = {lex_diversity}, order = {order_diversity} <sent> {text} </sent>"
+    
+    # Load model context tracking if it hasn't already warmed up
+    load_model()
+    
+    inputs = tokenizer([prompt], return_tensors="pt")
+    if torch.cuda.is_available():
+        inputs = {k: v.cuda() for k, v in inputs.items()}
+        
+    with torch.no_grad():
+        final_outputs = model.generate(**inputs, max_length=max_tokens)
+        
+    paraphrased_text = tokenizer.decode(final_outputs[0], skip_special_tokens=True)
+    
+    return {"paraphrase": paraphrased_text}
 
-    # Get diversity parameters (with defaults)
-    lex = input_data.get("lex_diversity", 60)
-    order = input_data.get("order_diversity", 40)
-
-    # Ensure they are valid multiples of 20
-    lex = min(100, max(0, lex))
-    order = min(100, max(0, order))
-    lex = (lex // 20) * 20
-    order = (order // 20) * 20
-
-    try:
-        result = paraphrase(text, lex, order)
-        return {"output": result}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-# ─── ENTRY POINT ─────────────────────────────────────────────────────
-if __name__ == "__main__":
+# Start the automated RunPod event listener loops
+if __name__ == '__main__':
+    load_model() # Trigger download during cold-start boot optimization stage
     runpod.serverless.start({"handler": handler})
