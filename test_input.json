@@ -1,0 +1,8 @@
+{
+  "input": {
+    "manuscript": "The quick brown fox jumps over the lazy dog.",
+    "task": "paraphrase_deep",
+    "subject": "social_science",
+    "citation": "apa"
+  }
+}
