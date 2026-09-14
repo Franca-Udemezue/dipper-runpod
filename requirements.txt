@@ -1,6 +1,4 @@
 runpod
 transformers
-torch
 sentencepiece
 accelerate
-nltk
