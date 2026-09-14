@@ -2,6 +2,7 @@ import os
 import re
 import math
 import difflib
+import traceback
 import torch
 from transformers import T5Tokenizer, T5ForConditionalGeneration
 
@@ -125,27 +126,41 @@ def validate_inputs(selected_task: str, selected_subject: str, selected_citation
 
 
 # ============================================================
-# SECTION 5: MODEL LOADING
+# SECTION 5: MODEL LOADING (LAZY - loads on first job, not at import)
 # ============================================================
 
-TOKENIZER_ID = "google/t5-v1_1-xxl"
 MODEL_DIR = "/runpod-volume/dipper-model"
-
 MODEL_DTYPE = torch.bfloat16
 
+model = None
+tokenizer = None
 
-print("[ModelStore] Loading tokenizer and model...")
 
-tokenizer = T5Tokenizer.from_pretrained(TOKENIZER_ID)
+def load_model():
+    """Load tokenizer + model on first use. Never runs at import time,
+    so a failure here returns a visible error instead of killing the
+    worker before runpod.serverless.start() can register the handler."""
+    global model, tokenizer
+    if model is not None and tokenizer is not None:
+        return
 
-model = T5ForConditionalGeneration.from_pretrained(
-    MODEL_DIR,
-    torch_dtype=MODEL_DTYPE,
-    device_map="auto",
-    local_files_only=True,
-)
-model.eval()
-print("[ModelStore] Model loaded successfully.")
+    print("[ModelStore] Loading tokenizer and model...", flush=True)
+
+    if not os.path.isdir(MODEL_DIR):
+        raise FileNotFoundError(
+            f"Model directory not found: {MODEL_DIR}. "
+            "Attach the network volume or fix MODEL_DIR."
+        )
+
+    tokenizer = T5Tokenizer.from_pretrained(MODEL_DIR)
+    model = T5ForConditionalGeneration.from_pretrained(
+        MODEL_DIR,
+        torch_dtype=MODEL_DTYPE,
+        device_map="auto",
+        local_files_only=True,
+    )
+    model.eval()
+    print("[ModelStore] Model loaded successfully.", flush=True)
 
 
 # ============================================================
@@ -167,6 +182,8 @@ def run_dipper_pipeline(
     errors = validate_inputs(selected_task, selected_subject, selected_citation)
     if errors:
         return {"error": errors}
+
+    load_model()
 
     if job_id:
         progress_store[job_id] = {"status": "RECEIVED", "progress": 0, "message": "Job received. Starting..."}
@@ -306,7 +323,7 @@ def run_dipper_pipeline(
 
 def dipper_handler(job):
     try:
-        input_data = job.get("input", {})
+        input_data = job.get("input", {}) or {}
         manuscript = input_data.get("manuscript")
         if not manuscript:
             return {"error": "Missing 'manuscript' field"}
@@ -319,35 +336,28 @@ def dipper_handler(job):
 
         job_id = job.get("id", None)
 
-        if lexical is None or order is None:
-            result = run_dipper_pipeline(
-                manuscript,
-                lexical_slider=60 if lexical is None else lexical,
-                order_slider=60 if order is None else order,
-                selected_task=selected_task,
-                selected_subject=selected_subject,
-                selected_citation=selected_citation,
-                job_id=job_id
-            )
-        else:
-            result = run_dipper_pipeline(
-                manuscript,
-                lexical_slider=lexical,
-                order_slider=order,
-                selected_task=selected_task,
-                selected_subject=selected_subject,
-                selected_citation=selected_citation,
-                job_id=job_id
-            )
+        result = run_dipper_pipeline(
+            manuscript,
+            lexical_slider=60 if lexical is None else lexical,
+            order_slider=60 if order is None else order,
+            selected_task=selected_task,
+            selected_subject=selected_subject,
+            selected_citation=selected_citation,
+            job_id=job_id
+        )
 
         return result
     except Exception as e:
-        return {"error": str(e)}
+        # Surface the real traceback in the job result AND stderr,
+        # so failures are visible even when worker logs are missing.
+        traceback.print_exc()
+        return {"error": str(e), "traceback": traceback.format_exc()}
 
 
 # ============================================================
 # SECTION 8: START
 # ============================================================
 
+if __name__ == "__main__":
     import runpod
     runpod.serverless.start({"handler": dipper_handler})
