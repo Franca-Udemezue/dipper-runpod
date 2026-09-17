@@ -4,6 +4,7 @@ import math
 import difflib
 import traceback
 import torch
+import runpod
 from transformers import T5Tokenizer, T5ForConditionalGeneration
 
 
@@ -357,7 +358,7 @@ def dipper_handler(job):
 # ============================================================
 # SECTION 8: START
 # ============================================================
-if __name__ == '__main__':
+if __name__ == "__main__":
     import runpod
     runpod.serverless.start({"handler": dipper_handler})
     
